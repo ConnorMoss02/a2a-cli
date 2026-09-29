@@ -50,7 +50,7 @@ func Bind(flags *pflag.FlagSet, store *Store) ([]FlagBinding, error) {
 
 		sensitive := false
 		switch f.Name {
-		case "auth", "bearer", "api-key":
+		case "auth", "bearer", "api-key", "svc-param":
 			sensitive = true
 		}
 

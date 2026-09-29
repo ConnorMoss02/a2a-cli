@@ -1345,6 +1345,14 @@ another_flag: 123
 			},
 		},
 		{
+			name:     "svc-param credentials are redacted",
+			filename: "creds.yaml",
+			content:  "svc-param:\n  - \"Authorization=Bearer SECRET123\"\n",
+			wantVals: map[string]string{
+				"svc-param": "<redacted>",
+			},
+		},
+		{
 			name:     "json config with additional properties ignored",
 			filename: "extra.json",
 			content: `{
