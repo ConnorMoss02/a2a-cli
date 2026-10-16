@@ -268,7 +268,7 @@ func formatCard(card *a2a.AgentCard) string {
 	if len(card.SupportedInterfaces) > 0 {
 		sb.WriteString("Interfaces:\n")
 		for _, iface := range card.SupportedInterfaces {
-			fmt.Fprintf(&sb, "  %-12s %s\n", iface.ProtocolBinding, iface.URL)
+			sb.WriteString(formatInterface(iface))
 		}
 	}
 
@@ -282,6 +282,18 @@ func formatCard(card *a2a.AgentCard) string {
 	}
 
 	return sb.String()
+}
+
+func formatInterface(iface *a2a.AgentInterface) string {
+	binding := string(iface.ProtocolBinding)
+	if iface.ProtocolVersion != "" {
+		binding = fmt.Sprintf("%s (A2A v%s)", binding, iface.ProtocolVersion)
+	}
+	line := fmt.Sprintf("  %-22s %s", binding, iface.URL)
+	if iface.Tenant != "" {
+		line += fmt.Sprintf("  (tenant: %s)", iface.Tenant)
+	}
+	return line + "\n"
 }
 
 func formatTask(task *a2a.Task) string {
