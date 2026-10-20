@@ -21,6 +21,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -32,11 +33,13 @@ import (
 const chatQuit = "/quit"
 
 type chatFlags struct {
-	taskID    string
-	contextID string
+	stream       bool
+	taskID       string
+	contextID    string
+	pollInterval time.Duration
 }
 
-func newChatCmd(cfg *globalConfig, isTerminal func() bool) *cobra.Command {
+func newChatCmd(cfg *globalConfig, poller pollerFunc, isTerminal func() bool) *cobra.Command {
 	var flags chatFlags
 
 	cmd := &cobra.Command{
@@ -62,7 +65,15 @@ func newChatCmd(cfg *globalConfig, isTerminal func() bool) *cobra.Command {
 			}
 			defer destroyClient(cfg, client)
 
-			session := &chatSession{cfg: cfg, client: client, contextID: flags.contextID, taskID: a2a.TaskID(flags.taskID)}
+			session := &chatSession{
+				cfg:       cfg,
+				client:    client,
+				flags:     &flags,
+				poller:    poller,
+				contextID: flags.contextID,
+				taskID:    a2a.TaskID(flags.taskID),
+			}
+			cfg.handlers = append(cfg.handlers, session.track)
 			if !interactive {
 				_, err := session.turn(baseCtx, args[0])
 				return err
@@ -72,18 +83,23 @@ func newChatCmd(cfg *globalConfig, isTerminal func() bool) *cobra.Command {
 	}
 
 	f := cmd.Flags()
+	f.BoolVar(&flags.stream, "stream", false, "Use streaming response. Falls back to polling and synthetic events if a server does not support streaming.")
 	f.StringVar(&flags.taskID, "task-id", "", "Task ID to continue an existing task")
 	f.StringVar(&flags.contextID, "context-id", "", "Context ID to group this turn under")
+	f.DurationVar(&flags.pollInterval, "poll-interval", 2*time.Second, "Duration between GetTask requests in polling fallback mode.")
 
 	return cmd
 }
 
 // chatSession carries a conversation's identifiers from one turn to the next.
 type chatSession struct {
-	cfg       *globalConfig
-	client    *a2aclient.Client
-	contextID string
-	taskID    a2a.TaskID
+	cfg          *globalConfig
+	client       *a2aclient.Client
+	flags        *chatFlags
+	poller       pollerFunc
+	contextID    string
+	taskID       a2a.TaskID
+	authRequired bool
 }
 
 func (s *chatSession) run(ctx context.Context, in io.Reader, args []string) error {
@@ -116,6 +132,8 @@ func (s *chatSession) run(ctx context.Context, in io.Reader, args []string) erro
 // reply runs one turn and reports whether the session should end. A failed turn is
 // printed the way send prints its errors, and the conversation goes on.
 func (s *chatSession) reply(ctx context.Context, text string) (done bool) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel() // ends a streamed turn's inactivity timer along with the turn
 	done, err := s.turn(ctx, text)
 	if err != nil {
 		s.cfg.renderError(err)
@@ -128,38 +146,62 @@ func (s *chatSession) turn(ctx context.Context, text string) (done bool, err err
 	msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart(text))
 	msg.ContextID = s.contextID
 	msg.TaskID = s.taskID
+	req := &a2a.SendMessageRequest{Message: msg, Tenant: s.cfg.tenant}
 
-	ctx, cancel := context.WithTimeout(ctx, s.cfg.timeout)
-	defer cancel()
-
-	result, err := s.client.SendMessage(ctx, &a2a.SendMessageRequest{Message: msg, Tenant: s.cfg.tenant})
-	if err != nil {
-		return false, fmt.Errorf("failed to send message: %w", err)
+	if s.flags.stream {
+		err = sendStreaming(ctx, s.cfg, s.client, req, s.poller, s.flags.pollInterval)
+	} else {
+		err = s.send(ctx, req)
 	}
-	if err := s.cfg.handleEvent(result); err != nil {
+	if err != nil {
 		return false, err
 	}
 
-	switch r := result.(type) {
-	case *a2a.Task:
-		s.contextID = r.ContextID
-		s.taskID = ""
-		switch r.Status.State {
-		case a2a.TaskStateInputRequired:
-			s.taskID = r.ID
-		case a2a.TaskStateAuthRequired:
-			s.taskID = r.ID
-			_, _ = fmt.Fprintln(s.cfg.stderr(), "The agent needs authentication to continue this task. "+
-				"Provide credentials with --auth or --svc-param, then resume it with send.")
-			return true, nil
-		}
-	case *a2a.Message:
-		if r.ContextID != "" {
-			s.contextID = r.ContextID
-		}
-		s.taskID = ""
+	if s.authRequired {
+		_, _ = fmt.Fprintln(s.cfg.stderr(), "The agent needs authentication to continue this task. "+
+			"Provide credentials with --auth or --svc-param, then resume it with send.")
+		return true, nil
 	}
 	return false, nil
+}
+
+func (s *chatSession) send(ctx context.Context, req *a2a.SendMessageRequest) error {
+	ctx, cancel := context.WithTimeout(ctx, s.cfg.timeout)
+	defer cancel()
+
+	result, err := s.client.SendMessage(ctx, req)
+	if err != nil {
+		return fmt.Errorf("failed to send message: %w", err)
+	}
+	return s.cfg.handleEvent(result)
+}
+
+// track follows the conversation's identifiers through every event a turn prints.
+func (s *chatSession) track(event a2a.Event) error {
+	switch e := event.(type) {
+	case *a2a.Task:
+		s.follow(e.ContextID, e.ID, e.Status.State)
+	case *a2a.TaskStatusUpdateEvent:
+		s.follow(e.ContextID, e.TaskID, e.Status.State)
+	case *a2a.Message:
+		if e.ContextID != "" {
+			s.contextID = e.ContextID
+		}
+		s.taskID, s.authRequired = "", false
+	}
+	return nil
+}
+
+// follow keeps a task's id for the next turn only while the task waits on the user.
+func (s *chatSession) follow(contextID string, taskID a2a.TaskID, state a2a.TaskState) {
+	s.contextID = contextID
+	s.taskID, s.authRequired = "", false
+	switch state {
+	case a2a.TaskStateInputRequired:
+		s.taskID = taskID
+	case a2a.TaskStateAuthRequired:
+		s.taskID, s.authRequired = taskID, true
+	}
 }
 
 func (s *chatSession) printResume() {

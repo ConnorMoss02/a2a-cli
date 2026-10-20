@@ -218,12 +218,16 @@ and task ids are printed so you can resume with `send` or `chat`.
 a2a chat -a <url>
 a2a chat -a <url> "Hello, what can you do?"
 
+# Stream each reply as it arrives
+a2a chat -a <url> --stream
+
 # Resume a conversation (same task)
 a2a chat -a <url> --context-id <context-id> --task-id <task-id>
 ```
 
 | Flag | Description |
 |---|---|
+| `--stream` | Use `SendStreamingMessage` for each turn. Events are printed incrementally. Falls back to polling if the server does not support streaming. |
 | `--task-id <id>` | Continue an existing task with the first message. |
 | `--context-id <id>` | Start the conversation in an existing context. |
 

@@ -70,7 +70,7 @@ func startChatAgent(t *testing.T, states ...a2a.TaskState) (*chatAgent, string) 
 				task := &a2a.Task{
 					ID:        ec.TaskID,
 					ContextID: ec.ContextID,
-					Status:    a2a.TaskStatus{State: state},
+					Status:    a2a.TaskStatus{State: a2a.TaskStateWorking},
 				}
 				agent.tasks = append(agent.tasks, task)
 				agent.mu.Unlock()
@@ -78,7 +78,10 @@ func startChatAgent(t *testing.T, states ...a2a.TaskState) (*chatAgent, string) 
 					yield(nil, errors.New("agent failed"))
 					return
 				}
-				yield(task, nil)
+				// A working task followed by its final status, so a stream has more than one event.
+				if yield(task, nil) {
+					yield(a2a.NewStatusUpdateEvent(task, state, nil), nil)
+				}
 			}
 		}),
 	)))
@@ -86,7 +89,7 @@ func startChatAgent(t *testing.T, states ...a2a.TaskState) (*chatAgent, string) 
 	return agent, server.URL
 }
 
-func runChat(t *testing.T, url string, terminal bool, stdin string, args ...string) (stderr string, err error) {
+func runChat(t *testing.T, url string, terminal bool, stdin string, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	var out, errBuf bytes.Buffer
 	cfg := &globalConfig{
@@ -102,14 +105,14 @@ func runChat(t *testing.T, url string, terminal bool, stdin string, args ...stri
 	root.SetIn(strings.NewReader(stdin))
 	root.SetArgs(append([]string{"chat", "-e", url, "--transport", "rest"}, args...))
 	err = root.Execute()
-	return errBuf.String(), err
+	return out.String(), errBuf.String(), err
 }
 
 func TestChatCarriesTheConversationAcrossTurns(t *testing.T) {
 	t.Parallel()
 	agent, url := startChatAgent(t, a2a.TaskStateInputRequired, a2a.TaskStateCompleted, a2a.TaskStateCompleted)
 
-	stderr, err := runChat(t, url, true, "two\nthree\n/quit\nnever sent\n", "one")
+	_, stderr, err := runChat(t, url, true, "two\nthree\n/quit\nnever sent\n", "one")
 	if err != nil {
 		t.Fatalf("chat error = %v, want nil", err)
 	}
@@ -168,7 +171,7 @@ func TestChatEnds(t *testing.T) {
 			t.Parallel()
 			agent, url := startChatAgent(t, tt.states...)
 
-			stderr, err := runChat(t, url, true, tt.stdin)
+			_, stderr, err := runChat(t, url, true, tt.stdin)
 			if err != nil {
 				t.Fatalf("chat error = %v, want nil", err)
 			}
@@ -189,7 +192,7 @@ func TestChatWithoutATerminal(t *testing.T) {
 		t.Parallel()
 		agent, url := startChatAgent(t, a2a.TaskStateCompleted)
 
-		if _, err := runChat(t, url, false, "two\n", "one"); err != nil {
+		if _, _, err := runChat(t, url, false, "two\n", "one"); err != nil {
 			t.Fatalf("chat error = %v, want nil", err)
 		}
 		if diff := cmp.Diff([]chatRequest{{Text: "one"}}, agent.requests); diff != "" {
@@ -201,7 +204,7 @@ func TestChatWithoutATerminal(t *testing.T) {
 		t.Parallel()
 		agent, url := startChatAgent(t)
 
-		_, err := runChat(t, url, false, "one\n")
+		_, _, err := runChat(t, url, false, "one\n")
 		if ce := clierr.Classify(err); ce == nil || ce.Code != clierr.CodeUsage {
 			t.Fatalf("chat error = %v, want a usage error", err)
 		}
@@ -215,12 +218,12 @@ func TestChatResumesATask(t *testing.T) {
 	t.Parallel()
 	agent, url := startChatAgent(t, a2a.TaskStateInputRequired, a2a.TaskStateCompleted)
 
-	if _, err := runChat(t, url, false, "", "one"); err != nil {
+	if _, _, err := runChat(t, url, false, "", "one"); err != nil {
 		t.Fatalf("chat error = %v, want nil", err)
 	}
 	first := agent.tasks[0]
 
-	_, err := runChat(t, url, true, "two\n", "--context-id", first.ContextID, "--task-id", string(first.ID))
+	_, _, err := runChat(t, url, true, "two\n", "--context-id", first.ContextID, "--task-id", string(first.ID))
 	if err != nil {
 		t.Fatalf("chat error = %v, want nil", err)
 	}
@@ -235,7 +238,7 @@ func TestChatContinuesAfterAnError(t *testing.T) {
 	t.Parallel()
 	agent, url := startChatAgent(t, a2a.TaskStateCompleted, chatTurnFails, a2a.TaskStateCompleted)
 
-	stderr, err := runChat(t, url, true, "two\nthree\n", "one")
+	_, stderr, err := runChat(t, url, true, "two\nthree\n", "one")
 	if err != nil {
 		t.Fatalf("chat error = %v, want nil", err)
 	}
@@ -252,5 +255,28 @@ func TestChatContinuesAfterAnError(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "Error: failed to send message") {
 		t.Fatalf("chat did not print the send error:\n%s", stderr)
+	}
+}
+
+func TestChatStreams(t *testing.T) {
+	t.Parallel()
+	agent, url := startChatAgent(t, a2a.TaskStateInputRequired, a2a.TaskStateCompleted)
+
+	stdout, _, err := runChat(t, url, true, "two\n", "--stream", "one")
+	if err != nil {
+		t.Fatalf("chat error = %v, want nil", err)
+	}
+
+	first := agent.tasks[0]
+	want := []chatRequest{
+		{Text: "one"},
+		{Text: "two", TaskID: string(first.ID), ContextID: first.ContextID},
+	}
+	if diff := cmp.Diff(want, agent.requests); diff != "" {
+		t.Fatalf("chat requests wrong (-want +got):\n%s", diff)
+	}
+	// Each turn streams the working task and then its final status update.
+	if got := strings.Count(stdout, "[status] "); got != 2 {
+		t.Fatalf("chat printed %d status updates, want 2:\n%s", got, stdout)
 	}
 }

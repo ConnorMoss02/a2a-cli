@@ -188,7 +188,7 @@ func newRootCmd(cfg *globalConfig, deps deps) (*cobra.Command, error) {
 	cmd.AddCommand(
 		newCardCmd(cfg),
 		newSendCmd(cfg, deps.poller),
-		newChatCmd(cfg, deps.isTerminal),
+		newChatCmd(cfg, deps.poller, deps.isTerminal),
 		newTaskCmd(cfg),
 		newConfigCmd(cfg),
 		newServeCmd(cfg),
