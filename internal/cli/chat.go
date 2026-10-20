@@ -39,7 +39,7 @@ type chatFlags struct {
 	pollInterval time.Duration
 }
 
-func newChatCmd(cfg *globalConfig, poller pollerFunc, isTerminal func() bool) *cobra.Command {
+func newChatCmd(cfg *globalConfig, deps deps) *cobra.Command {
 	var flags chatFlags
 
 	cmd := &cobra.Command{
@@ -47,11 +47,12 @@ func newChatCmd(cfg *globalConfig, poller pollerFunc, isTerminal func() bool) *c
 		Short: "Chat with an agent, carrying the conversation across turns",
 		Long: "Chat with an agent interactively. Each reply continues the same conversation: the context id is carried " +
 			"across turns, and an input-required task is continued with your next message. Type " + chatQuit + " or press " +
-			"Ctrl-D to exit; the context and task ids are printed so you can resume with send, or with chat --context-id and --task-id.\n\n" +
+			"Ctrl-D to exit; the context and task ids are printed so you can resume with send, or with chat --context-id and --task-id. " +
+			"Ctrl-C cancels a running turn, or exits at the prompt.\n\n" +
 			"When standard input or output is not a terminal, chat sends [message] once, like send, and reads no input.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			interactive := isTerminal()
+			interactive := deps.isTerminal()
 			if !interactive && len(args) == 0 {
 				return clierr.Usage("chat needs a terminal; pass a message to send it once, or use send")
 			}
@@ -69,7 +70,8 @@ func newChatCmd(cfg *globalConfig, poller pollerFunc, isTerminal func() bool) *c
 				cfg:       cfg,
 				client:    client,
 				flags:     &flags,
-				poller:    poller,
+				poller:    deps.poller,
+				notify:    deps.notifyInterrupt,
 				contextID: flags.contextID,
 				taskID:    a2a.TaskID(flags.taskID),
 			}
@@ -97,6 +99,7 @@ type chatSession struct {
 	client       *a2aclient.Client
 	flags        *chatFlags
 	poller       pollerFunc
+	notify       func(context.Context) (context.Context, context.CancelFunc)
 	contextID    string
 	taskID       a2a.TaskID
 	authRequired bool
@@ -109,14 +112,17 @@ func (s *chatSession) run(ctx context.Context, in io.Reader, args []string) erro
 		return nil
 	}
 
-	lines := bufio.NewScanner(in)
+	stop := make(chan struct{})
+	defer close(stop)
+	lines, scanErr := scanLines(in, stop)
 	for {
 		_, _ = fmt.Fprint(s.cfg.stderr(), "> ")
-		if !lines.Scan() {
+		line, ok, err := s.next(ctx, lines, scanErr)
+		if !ok {
 			_, _ = fmt.Fprintln(s.cfg.stderr())
-			return lines.Err()
+			return err
 		}
-		text := strings.TrimSpace(lines.Text())
+		text := strings.TrimSpace(line)
 		if text == "" {
 			continue
 		}
@@ -129,13 +135,54 @@ func (s *chatSession) run(ctx context.Context, in io.Reader, args []string) erro
 	}
 }
 
-// reply runs one turn and reports whether the session should end. A failed turn is
-// printed the way send prints its errors, and the conversation goes on.
+// scanLines reads lines on a goroutine so an interrupt is noticed while chat waits for
+// input. It sends the scan error, if any, before closing lines, and quits once stop is
+// closed; a read already blocked on a terminal only returns when the process exits.
+func scanLines(in io.Reader, stop <-chan struct{}) (<-chan string, <-chan error) {
+	lines := make(chan string)
+	scanErr := make(chan error, 1)
+	go func() {
+		defer close(lines)
+		scanner := bufio.NewScanner(in)
+		for scanner.Scan() {
+			select {
+			case lines <- scanner.Text():
+			case <-stop:
+				return
+			}
+		}
+		scanErr <- scanner.Err()
+	}()
+	return lines, scanErr
+}
+
+// next waits for a line of input. It reports !ok at the end of input, or when
+// interrupted at the prompt.
+func (s *chatSession) next(ctx context.Context, lines <-chan string, scanErr <-chan error) (string, bool, error) {
+	ctx, stop := s.notify(ctx)
+	defer stop()
+	select {
+	case line, ok := <-lines:
+		if !ok {
+			return "", false, <-scanErr
+		}
+		return line, true, nil
+	case <-ctx.Done():
+		return "", false, nil
+	}
+}
+
+// reply runs one turn and reports whether the session should end. Ctrl-C cancels the
+// turn, and a failed turn is printed the way send prints its errors; either way the
+// conversation goes on.
 func (s *chatSession) reply(ctx context.Context, text string) (done bool) {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel() // ends a streamed turn's inactivity timer along with the turn
+	ctx, stop := s.notify(ctx)
+	defer stop()
 	done, err := s.turn(ctx, text)
-	if err != nil {
+	switch {
+	case err != nil && ctx.Err() != nil:
+		_, _ = fmt.Fprintln(s.cfg.stderr(), "Interrupted.")
+	case err != nil:
 		s.cfg.renderError(err)
 	}
 	return done

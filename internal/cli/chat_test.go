@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"iter"
 	"net/http/httptest"
 	"strings"
@@ -42,8 +43,12 @@ type chatRequest struct {
 	ContextID string
 }
 
-// chatTurnFails scripts a turn that the agent answers with an error.
-const chatTurnFails = a2a.TaskStateUnspecified
+const (
+	// chatTurnFails scripts a turn that the agent answers with an error.
+	chatTurnFails a2a.TaskState = "fail"
+	// chatTurnInterrupted scripts a turn that the user interrupts while the agent works.
+	chatTurnInterrupted a2a.TaskState = "interrupt"
+)
 
 // chatAgent answers each turn with a task in the next scripted state.
 type chatAgent struct {
@@ -51,11 +56,25 @@ type chatAgent struct {
 	states   []a2a.TaskState
 	requests []chatRequest
 	tasks    []*a2a.Task
+
+	// interrupt stands in for Ctrl-C: it cancels the context of the latest interrupt
+	// scope chat opened, which during a turn is that turn.
+	interrupt context.CancelFunc
+}
+
+// notifyInterrupt replaces signal.NotifyContext so a test can interrupt chat.
+func (a *chatAgent) notifyInterrupt(ctx context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(ctx)
+	a.mu.Lock()
+	a.interrupt = cancel
+	a.mu.Unlock()
+	return ctx, cancel
 }
 
 func startChatAgent(t *testing.T, states ...a2a.TaskState) (*chatAgent, string) {
 	t.Helper()
 	agent := &chatAgent{states: states}
+	release := make(chan struct{})
 	server := httptest.NewServer(a2asrv.NewRESTHandler(a2asrv.NewHandler(
 		a2asrv.AgentExecutorFunc(func(ctx context.Context, ec *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
 			return func(yield func(a2a.Event, error) bool) {
@@ -78,6 +97,16 @@ func startChatAgent(t *testing.T, states ...a2a.TaskState) (*chatAgent, string) 
 					yield(nil, errors.New("agent failed"))
 					return
 				}
+				if state == chatTurnInterrupted {
+					agent.mu.Lock()
+					agent.interrupt()
+					agent.mu.Unlock()
+					select {
+					case <-ctx.Done():
+					case <-release:
+					}
+					return
+				}
 				// A working task followed by its final status, so a stream has more than one event.
 				if yield(task, nil) {
 					yield(a2a.NewStatusUpdateEvent(task, state, nil), nil)
@@ -86,10 +115,16 @@ func startChatAgent(t *testing.T, states ...a2a.TaskState) (*chatAgent, string) 
 		}),
 	)))
 	t.Cleanup(server.Close)
+	t.Cleanup(func() { close(release) })
 	return agent, server.URL
 }
 
 func runChat(t *testing.T, url string, terminal bool, stdin string, args ...string) (stdout, stderr string, err error) {
+	t.Helper()
+	return runChatWith(t, deps{isTerminal: func() bool { return terminal }}, url, strings.NewReader(stdin), args...)
+}
+
+func runChatWith(t *testing.T, d deps, url string, stdin io.Reader, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	var out, errBuf bytes.Buffer
 	cfg := &globalConfig{
@@ -97,12 +132,10 @@ func runChat(t *testing.T, url string, terminal bool, stdin string, args ...stri
 		svcParams: &flagparse.ServiceParams{},
 		errOut:    &errBuf,
 	}
-	root := mustNewRoot(t, cfg, deps{
-		poller:     polling.Stream,
-		cfgLoader:  clicfg.LoadEmpty,
-		isTerminal: func() bool { return terminal },
-	})
-	root.SetIn(strings.NewReader(stdin))
+	d.poller = polling.Stream
+	d.cfgLoader = clicfg.LoadEmpty
+	root := mustNewRoot(t, cfg, d)
+	root.SetIn(stdin)
 	root.SetArgs(append([]string{"chat", "-e", url, "--transport", "rest"}, args...))
 	err = root.Execute()
 	return out.String(), errBuf.String(), err
@@ -279,4 +312,57 @@ func TestChatStreams(t *testing.T) {
 	if got := strings.Count(stdout, "[status] "); got != 2 {
 		t.Fatalf("chat printed %d status updates, want 2:\n%s", got, stdout)
 	}
+}
+
+func TestChatInterrupt(t *testing.T) {
+	t.Parallel()
+
+	t.Run("cancels the running turn and keeps the session open", func(t *testing.T) {
+		t.Parallel()
+		agent, url := startChatAgent(t, a2a.TaskStateCompleted, chatTurnInterrupted, a2a.TaskStateCompleted)
+		d := deps{isTerminal: func() bool { return true }, notifyInterrupt: agent.notifyInterrupt}
+
+		_, stderr, err := runChatWith(t, d, url, strings.NewReader("two\nthree\n"), "one")
+		if err != nil {
+			t.Fatalf("chat error = %v, want nil", err)
+		}
+
+		contextID := agent.tasks[0].ContextID
+		want := []chatRequest{
+			{Text: "one"},
+			{Text: "two", ContextID: contextID},
+			{Text: "three", ContextID: contextID},
+		}
+		if diff := cmp.Diff(want, agent.requests); diff != "" {
+			t.Fatalf("chat requests wrong (-want +got):\n%s", diff)
+		}
+		if !strings.Contains(stderr, "Interrupted") {
+			t.Fatalf("chat did not report the interrupted turn:\n%s", stderr)
+		}
+	})
+
+	t.Run("at the prompt ends the session", func(t *testing.T) {
+		t.Parallel()
+		agent, url := startChatAgent(t)
+		interrupted := func(ctx context.Context) (context.Context, context.CancelFunc) {
+			ctx, cancel := context.WithCancel(ctx)
+			cancel()
+			return ctx, cancel
+		}
+		d := deps{isTerminal: func() bool { return true }, notifyInterrupt: interrupted}
+		// Input that never arrives, so only the interrupt can end the wait at the prompt.
+		stdin, w := io.Pipe()
+		t.Cleanup(func() { _ = w.Close() })
+
+		_, stderr, err := runChatWith(t, d, url, stdin, "--context-id", "ctx-1")
+		if err != nil {
+			t.Fatalf("chat error = %v, want nil", err)
+		}
+		if got := len(agent.requests); got != 0 {
+			t.Fatalf("chat sent %d messages, want 0", got)
+		}
+		if !strings.Contains(stderr, "contextId: ctx-1") {
+			t.Fatalf("chat did not print the context id to resume with:\n%s", stderr)
+		}
+	})
 }

@@ -21,6 +21,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/signal"
 	"sync"
 	"time"
 
@@ -39,9 +40,10 @@ const pluginsEnabledKey = "plugins-enabled"
 type cfgLoaderFunc func(clicfg.LoadOpts) (*clicfg.Store, error)
 
 type deps struct {
-	poller     pollerFunc
-	cfgLoader  cfgLoaderFunc
-	isTerminal func() bool
+	poller          pollerFunc
+	cfgLoader       cfgLoaderFunc
+	isTerminal      func() bool
+	notifyInterrupt func(context.Context) (context.Context, context.CancelFunc)
 }
 
 func (d *deps) setDefaults() {
@@ -53,6 +55,11 @@ func (d *deps) setDefaults() {
 	}
 	if d.isTerminal == nil {
 		d.isTerminal = stdioIsTerminal
+	}
+	if d.notifyInterrupt == nil {
+		d.notifyInterrupt = func(ctx context.Context) (context.Context, context.CancelFunc) {
+			return signal.NotifyContext(ctx, os.Interrupt)
+		}
 	}
 }
 
@@ -126,9 +133,9 @@ func (g *globalConfig) renderError(err error) int {
 		}
 		return ce.Exit
 	}
-	fmt.Fprintf(g.stderr(), "Error: %s\n", ce.Message)
+	_, _ = fmt.Fprintf(g.stderr(), "Error: %s\n", ce.Message)
 	if ce.Hint != "" {
-		fmt.Fprintf(g.stderr(), "hint: %s\n", ce.Hint)
+		_, _ = fmt.Fprintf(g.stderr(), "hint: %s\n", ce.Hint)
 	}
 	return ce.Exit
 }
@@ -188,7 +195,7 @@ func newRootCmd(cfg *globalConfig, deps deps) (*cobra.Command, error) {
 	cmd.AddCommand(
 		newCardCmd(cfg),
 		newSendCmd(cfg, deps.poller),
-		newChatCmd(cfg, deps.poller, deps.isTerminal),
+		newChatCmd(cfg, deps),
 		newTaskCmd(cfg),
 		newConfigCmd(cfg),
 		newServeCmd(cfg),
