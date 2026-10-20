@@ -31,13 +31,20 @@ import (
 
 const chatQuit = "/quit"
 
+type chatFlags struct {
+	taskID    string
+	contextID string
+}
+
 func newChatCmd(cfg *globalConfig, isTerminal func() bool) *cobra.Command {
-	return &cobra.Command{
+	var flags chatFlags
+
+	cmd := &cobra.Command{
 		Use:   "chat [message]",
 		Short: "Chat with an agent, carrying the conversation across turns",
 		Long: "Chat with an agent interactively. Each reply continues the same conversation: the context id is carried " +
 			"across turns, and an input-required task is continued with your next message. Type " + chatQuit + " or press " +
-			"Ctrl-D to exit; the context and task ids are printed so you can resume with send.\n\n" +
+			"Ctrl-D to exit; the context and task ids are printed so you can resume with send, or with chat --context-id and --task-id.\n\n" +
 			"When standard input or output is not a terminal, chat sends [message] once, like send, and reads no input.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -55,7 +62,7 @@ func newChatCmd(cfg *globalConfig, isTerminal func() bool) *cobra.Command {
 			}
 			defer destroyClient(cfg, client)
 
-			session := &chatSession{cfg: cfg, client: client}
+			session := &chatSession{cfg: cfg, client: client, contextID: flags.contextID, taskID: a2a.TaskID(flags.taskID)}
 			if !interactive {
 				_, err := session.turn(baseCtx, args[0])
 				return err
@@ -63,6 +70,12 @@ func newChatCmd(cfg *globalConfig, isTerminal func() bool) *cobra.Command {
 			return session.run(baseCtx, cmd.InOrStdin(), args)
 		},
 	}
+
+	f := cmd.Flags()
+	f.StringVar(&flags.taskID, "task-id", "", "Task ID to continue an existing task")
+	f.StringVar(&flags.contextID, "context-id", "", "Context ID to group this turn under")
+
+	return cmd
 }
 
 // chatSession carries a conversation's identifiers from one turn to the next.

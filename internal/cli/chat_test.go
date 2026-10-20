@@ -201,3 +201,23 @@ func TestChatWithoutATerminal(t *testing.T) {
 		}
 	})
 }
+
+func TestChatResumesATask(t *testing.T) {
+	t.Parallel()
+	agent, url := startChatAgent(t, a2a.TaskStateInputRequired, a2a.TaskStateCompleted)
+
+	if _, err := runChat(t, url, false, "", "one"); err != nil {
+		t.Fatalf("chat error = %v, want nil", err)
+	}
+	first := agent.tasks[0]
+
+	_, err := runChat(t, url, true, "two\n", "--context-id", first.ContextID, "--task-id", string(first.ID))
+	if err != nil {
+		t.Fatalf("chat error = %v, want nil", err)
+	}
+
+	want := chatRequest{Text: "two", TaskID: string(first.ID), ContextID: first.ContextID}
+	if diff := cmp.Diff(want, agent.requests[1]); diff != "" {
+		t.Fatalf("chat did not resume the task (-want +got):\n%s", diff)
+	}
+}
