@@ -17,6 +17,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"iter"
 	"net/http/httptest"
 	"strings"
@@ -41,6 +42,9 @@ type chatRequest struct {
 	ContextID string
 }
 
+// chatTurnFails scripts a turn that the agent answers with an error.
+const chatTurnFails = a2a.TaskStateUnspecified
+
 // chatAgent answers each turn with a task in the next scripted state.
 type chatAgent struct {
 	mu       sync.Mutex
@@ -62,13 +66,18 @@ func startChatAgent(t *testing.T, states ...a2a.TaskState) (*chatAgent, string) 
 					TaskID:    string(ec.Message.TaskID),
 					ContextID: ec.Message.ContextID,
 				})
+				state := agent.states[turn]
 				task := &a2a.Task{
 					ID:        ec.TaskID,
 					ContextID: ec.ContextID,
-					Status:    a2a.TaskStatus{State: agent.states[turn]},
+					Status:    a2a.TaskStatus{State: state},
 				}
 				agent.tasks = append(agent.tasks, task)
 				agent.mu.Unlock()
+				if state == chatTurnFails {
+					yield(nil, errors.New("agent failed"))
+					return
+				}
 				yield(task, nil)
 			}
 		}),
@@ -219,5 +228,29 @@ func TestChatResumesATask(t *testing.T) {
 	want := chatRequest{Text: "two", TaskID: string(first.ID), ContextID: first.ContextID}
 	if diff := cmp.Diff(want, agent.requests[1]); diff != "" {
 		t.Fatalf("chat did not resume the task (-want +got):\n%s", diff)
+	}
+}
+
+func TestChatContinuesAfterAnError(t *testing.T) {
+	t.Parallel()
+	agent, url := startChatAgent(t, a2a.TaskStateCompleted, chatTurnFails, a2a.TaskStateCompleted)
+
+	stderr, err := runChat(t, url, true, "two\nthree\n", "one")
+	if err != nil {
+		t.Fatalf("chat error = %v, want nil", err)
+	}
+
+	contextID := agent.tasks[0].ContextID
+	want := []chatRequest{
+		{Text: "one"},
+		{Text: "two", ContextID: contextID},
+		// The failed turn is reported and the conversation goes on in the same context.
+		{Text: "three", ContextID: contextID},
+	}
+	if diff := cmp.Diff(want, agent.requests); diff != "" {
+		t.Fatalf("chat requests wrong (-want +got):\n%s", diff)
+	}
+	if !strings.Contains(stderr, "Error: failed to send message") {
+		t.Fatalf("chat did not print the send error:\n%s", stderr)
 	}
 }

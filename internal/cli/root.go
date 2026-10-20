@@ -122,13 +122,13 @@ func (g *globalConfig) renderError(err error) int {
 	ce := clierr.Classify(err)
 	if g.IsJSON() {
 		if perr := g.PrintJSON(ce); perr != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			_, _ = fmt.Fprintf(g.stderr(), "Error: %v\n", err)
 		}
 		return ce.Exit
 	}
-	fmt.Fprintf(os.Stderr, "Error: %s\n", ce.Message)
+	fmt.Fprintf(g.stderr(), "Error: %s\n", ce.Message)
 	if ce.Hint != "" {
-		fmt.Fprintf(os.Stderr, "hint: %s\n", ce.Hint)
+		fmt.Fprintf(g.stderr(), "hint: %s\n", ce.Hint)
 	}
 	return ce.Exit
 }

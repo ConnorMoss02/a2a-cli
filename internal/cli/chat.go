@@ -89,10 +89,8 @@ type chatSession struct {
 func (s *chatSession) run(ctx context.Context, in io.Reader, args []string) error {
 	defer s.printResume()
 
-	if len(args) == 1 {
-		if done, err := s.turn(ctx, args[0]); err != nil || done {
-			return err
-		}
+	if len(args) == 1 && s.reply(ctx, args[0]) {
+		return nil
 	}
 
 	lines := bufio.NewScanner(in)
@@ -109,10 +107,20 @@ func (s *chatSession) run(ctx context.Context, in io.Reader, args []string) erro
 		if text == chatQuit {
 			return nil
 		}
-		if done, err := s.turn(ctx, text); err != nil || done {
-			return err
+		if s.reply(ctx, text) {
+			return nil
 		}
 	}
+}
+
+// reply runs one turn and reports whether the session should end. A failed turn is
+// printed the way send prints its errors, and the conversation goes on.
+func (s *chatSession) reply(ctx context.Context, text string) (done bool) {
+	done, err := s.turn(ctx, text)
+	if err != nil {
+		s.cfg.renderError(err)
+	}
+	return done
 }
 
 // turn sends one message and reports done when the conversation cannot continue.

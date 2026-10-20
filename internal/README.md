@@ -209,8 +209,9 @@ a2a send -a <url> --context-id <context-id> "Related question"
 
 Hold a back-and-forth conversation with one agent. Each message continues the
 same conversation: the context id is carried across turns, and a task waiting on
-`INPUT_REQUIRED` is continued with your next message. An `AUTH_REQUIRED` task ends
-the session with an explanation. Type `/quit` or press Ctrl-D to exit; the context
+`INPUT_REQUIRED` is continued with your next message. A failed turn prints the
+error and the session stays open. An `AUTH_REQUIRED` task ends the session with an
+explanation. Type `/quit` or press Ctrl-D to exit; the context
 and task ids are printed so you can resume with `send` or `chat`.
 
 ```bash
