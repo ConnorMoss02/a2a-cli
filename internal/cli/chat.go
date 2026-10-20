@@ -48,7 +48,7 @@ func newChatCmd(cfg *globalConfig, deps deps) *cobra.Command {
 		Long: "Chat with an agent interactively. Each reply continues the same conversation: the context id is carried " +
 			"across turns, and an input-required task is continued with your next message. Type " + chatQuit + " or press " +
 			"Ctrl-D to exit; the context and task ids are printed so you can resume with send, or with chat --context-id and --task-id. " +
-			"Ctrl-C cancels a running turn, or exits at the prompt.\n\n" +
+			"Ctrl-C cancels a running turn and asks the agent to cancel its task, or exits at the prompt.\n\n" +
 			"When standard input or output is not a terminal, chat sends [message] once, like send, and reads no input.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -103,6 +103,8 @@ type chatSession struct {
 	contextID    string
 	taskID       a2a.TaskID
 	authRequired bool
+	// running is the task the current turn is working on, once the agent has named it.
+	running a2a.TaskID
 }
 
 func (s *chatSession) run(ctx context.Context, in io.Reader, args []string) error {
@@ -173,23 +175,42 @@ func (s *chatSession) next(ctx context.Context, lines <-chan string, scanErr <-c
 }
 
 // reply runs one turn and reports whether the session should end. Ctrl-C cancels the
-// turn, and a failed turn is printed the way send prints its errors; either way the
-// conversation goes on.
+// turn and the task it left running, and a failed turn is printed the way send prints
+// its errors; either way the conversation goes on.
 func (s *chatSession) reply(ctx context.Context, text string) (done bool) {
 	ctx, stop := s.notify(ctx)
 	defer stop()
 	done, err := s.turn(ctx, text)
 	switch {
 	case err != nil && ctx.Err() != nil:
-		_, _ = fmt.Fprintln(s.cfg.stderr(), "Interrupted.")
+		s.cancelRunning(ctx)
 	case err != nil:
 		s.cfg.renderError(err)
 	}
 	return done
 }
 
+// cancelRunning asks the agent to stop the task an interrupted turn left running. The
+// turn's context is already canceled, so the request gets a fresh timeout.
+func (s *chatSession) cancelRunning(ctx context.Context) {
+	id := s.running
+	if id == "" {
+		_, _ = fmt.Fprintln(s.cfg.stderr(), "Interrupted.")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.cfg.timeout)
+	defer cancel()
+	if _, err := s.client.CancelTask(ctx, &a2a.CancelTaskRequest{ID: id, Tenant: s.cfg.tenant}); err != nil {
+		_, _ = fmt.Fprintf(s.cfg.stderr(), "Interrupted. Could not cancel task %s: %v\n", id, err)
+		return
+	}
+	_, _ = fmt.Fprintf(s.cfg.stderr(), "Interrupted. Canceled task %s.\n", id)
+	s.taskID, s.running = "", ""
+}
+
 // turn sends one message and reports done when the conversation cannot continue.
 func (s *chatSession) turn(ctx context.Context, text string) (done bool, err error) {
+	s.running = s.taskID
 	msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart(text))
 	msg.ContextID = s.contextID
 	msg.TaskID = s.taskID
@@ -234,7 +255,7 @@ func (s *chatSession) track(event a2a.Event) error {
 		if e.ContextID != "" {
 			s.contextID = e.ContextID
 		}
-		s.taskID, s.authRequired = "", false
+		s.taskID, s.running, s.authRequired = "", "", false
 	}
 	return nil
 }
@@ -243,6 +264,10 @@ func (s *chatSession) track(event a2a.Event) error {
 func (s *chatSession) follow(contextID string, taskID a2a.TaskID, state a2a.TaskState) {
 	s.contextID = contextID
 	s.taskID, s.authRequired = "", false
+	s.running = ""
+	if !state.Terminal() {
+		s.running = taskID
+	}
 	switch state {
 	case a2a.TaskStateInputRequired:
 		s.taskID = taskID
