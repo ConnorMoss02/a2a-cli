@@ -233,6 +233,13 @@ func TestChatEnds(t *testing.T) {
 			wantStderr:   "contextId: ",
 		},
 		{
+			name:         "on /exit",
+			states:       []a2a.TaskState{a2a.TaskStateCompleted},
+			stdin:        "one\n/exit\ntwo\n",
+			wantRequests: 1,
+			wantStderr:   "contextId: ",
+		},
+		{
 			name:         "when the agent needs authentication",
 			states:       []a2a.TaskState{a2a.TaskStateAuthRequired},
 			stdin:        "one\ntwo\n",
@@ -260,47 +267,24 @@ func TestChatEnds(t *testing.T) {
 	}
 }
 
-func TestChatWithoutATerminal(t *testing.T) {
+func TestChatWithoutATerminalIsAUsageError(t *testing.T) {
 	t.Parallel()
+	agent, url := startChatAgent(t)
 
-	t.Run("sends the message once and prints the ids", func(t *testing.T) {
-		t.Parallel()
-		agent, url := startChatAgent(t, a2a.TaskStateInputRequired)
-
-		_, stderr, err := runChat(t, url, false, "two\n", "one")
-		if err != nil {
-			t.Fatalf("a2a chat error = %v, want nil", err)
-		}
-		if diff := cmp.Diff([]chatRequest{{Text: "one"}}, agent.requests); diff != "" {
-			t.Fatalf("a2a chat requests wrong result (-want +got) diff = %s", diff)
-		}
-		task := agent.tasks[0]
-		for _, want := range []string{"contextId: " + task.ContextID, "taskId:    " + string(task.ID)} {
-			if !strings.Contains(stderr, want) {
-				t.Fatalf("a2a chat stderr = %q, want it to contain %q", stderr, want)
-			}
-		}
-	})
-
-	t.Run("without a message is a usage error", func(t *testing.T) {
-		t.Parallel()
-		agent, url := startChatAgent(t)
-
-		_, _, err := runChat(t, url, false, "one\n")
-		if ce := clierr.Classify(err); ce == nil || ce.Code != clierr.CodeUsage {
-			t.Fatalf("a2a chat error = %v, want a usage error", err)
-		}
-		if got := len(agent.requests); got != 0 {
-			t.Fatalf("a2a chat sent %d messages, want 0", got)
-		}
-	})
+	_, _, err := runChat(t, url, false, "two\n", "one")
+	if ce := clierr.Classify(err); ce == nil || ce.Code != clierr.CodeUsage {
+		t.Fatalf("a2a chat error = %v, want a usage error", err)
+	}
+	if got := len(agent.requests); got != 0 {
+		t.Fatalf("a2a chat sent %d messages, want 0", got)
+	}
 }
 
 func TestChatResumesATask(t *testing.T) {
 	t.Parallel()
 	agent, url := startChatAgent(t, a2a.TaskStateInputRequired, a2a.TaskStateCompleted)
 
-	if _, _, err := runChat(t, url, false, "", "one"); err != nil {
+	if _, _, err := runChat(t, url, true, "", "one"); err != nil {
 		t.Fatalf("a2a chat error = %v, want nil", err)
 	}
 	first := agent.tasks[0]

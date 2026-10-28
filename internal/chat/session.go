@@ -26,8 +26,11 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2a"
 )
 
-// Quit is the input that ends a session.
-const Quit = "/quit"
+// Inputs that end a session.
+const (
+	Quit = "/quit"
+	Exit = "/exit"
+)
 
 // maxLineSize bounds a single line of input, so a large paste does not end the session.
 const maxLineSize = 1 << 20
@@ -63,14 +66,7 @@ func NewSession(cfg Config, contextID string, taskID a2a.TaskID) *Session {
 	return &Session{cfg: cfg, contextID: contextID, taskID: taskID}
 }
 
-// Once sends a single message and prints the identifiers to resume the conversation with.
-func (s *Session) Once(ctx context.Context, text string) error {
-	defer s.printResume()
-	_, err := s.turn(ctx, text)
-	return err
-}
-
-// Run reads messages from in until Quit, the end of input, an interrupt at the prompt,
+// Run reads messages from in until Quit or Exit, the end of input, an interrupt at the prompt,
 // or a task that needs authentication. A non-empty first is sent before reading input.
 func (s *Session) Run(ctx context.Context, in io.Reader, first string) error {
 	defer s.printResume()
@@ -93,7 +89,7 @@ func (s *Session) Run(ctx context.Context, in io.Reader, first string) error {
 		if text == "" {
 			continue
 		}
-		if text == Quit {
+		if text == Quit || text == Exit {
 			return nil
 		}
 		if s.reply(ctx, text) {

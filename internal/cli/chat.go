@@ -40,19 +40,18 @@ func newChatCmd(cfg *globalConfig, deps deps) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "chat [message]",
-		Short: "Chat with an agent, carrying the conversation across turns",
-		Long: "Chat with an agent interactively. Each reply continues the same conversation: the context id is carried " +
-			"across turns, and an input-required task is continued with your next message. Type " + chat.Quit + " or press " +
-			"Ctrl-D to exit; the context and task ids are printed so you can resume with send, or with chat --context-id and --task-id. " +
-			"Ctrl-C cancels a running turn and asks the agent to cancel its task, or exits at the prompt. " +
-			"A turn that exceeds --timeout also cancels its task.\n\n" +
-			"When standard input or output is not a terminal, chat sends [message] once, prints the context and task ids, " +
-			"and reads no input.",
+		Short: "Chat interactively with an agent",
+		Long: "Start an interactive chat session with an agent. Chat reuses the same context ID " +
+			"across turns and continues tasks that require input.\n\n" +
+			"Controls:\n" +
+			"  " + chat.Exit + ", " + chat.Quit + ", Ctrl-D   Exit and print the context and task IDs to resume later\n" +
+			"  Ctrl-C                 Cancel an active turn (and its agent task), or exit at the prompt\n\n" +
+			"Chat requires a terminal; use send to send a single message. " +
+			"Use chat --context-id and --task-id to resume a conversation.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			interactive := deps.isTerminal()
-			if !interactive && len(args) == 0 {
-				return clierr.Usage("chat needs a terminal; pass a message to send it once, or use send")
+			if !deps.isTerminal() {
+				return clierr.Usage("chat needs a terminal; use send to send a single message")
 			}
 
 			baseCtx := withServiceParams(cmd.Context(), cfg)
@@ -80,9 +79,6 @@ func newChatCmd(cfg *globalConfig, deps deps) *cobra.Command {
 			}, flags.contextID, a2a.TaskID(flags.taskID))
 			cfg.handlers = append(cfg.handlers, session.Track)
 
-			if !interactive {
-				return session.Once(baseCtx, args[0])
-			}
 			var first string
 			if len(args) == 1 {
 				first = args[0]
@@ -92,10 +88,10 @@ func newChatCmd(cfg *globalConfig, deps deps) *cobra.Command {
 	}
 
 	f := cmd.Flags()
-	f.BoolVar(&flags.stream, "stream", false, "Use streaming response. Falls back to polling and synthetic events if a server does not support streaming.")
+	f.BoolVar(&flags.stream, "stream", false, "Stream responses (falls back to polling if unsupported)")
 	f.StringVar(&flags.taskID, "task-id", "", "Task ID to continue an existing task")
-	f.StringVar(&flags.contextID, "context-id", "", "Context ID to group this turn under")
-	f.DurationVar(&flags.pollInterval, "poll-interval", 2*time.Second, "Duration between GetTask requests in polling fallback mode.")
+	f.StringVar(&flags.contextID, "context-id", "", "Context ID to continue an existing conversation")
+	f.DurationVar(&flags.pollInterval, "poll-interval", 2*time.Second, "Interval between GetTask requests when polling")
 
 	return cmd
 }
