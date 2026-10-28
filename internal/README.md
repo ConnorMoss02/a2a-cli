@@ -212,7 +212,8 @@ same conversation: the context id is carried across turns, and a task waiting on
 `INPUT_REQUIRED` is continued with your next message. A failed turn prints the
 error and the session stays open. An `AUTH_REQUIRED` task ends the session with an
 explanation. Ctrl-C cancels a running turn, asks the agent to cancel the task it
-started, and returns to the prompt. Type `/quit`, press Ctrl-D, or press Ctrl-C at
+started, and returns to the prompt; a second Ctrl-C abandons that cancel request.
+A turn that exceeds `--timeout` also cancels its task. Type `/quit`, press Ctrl-D, or press Ctrl-C at
 the prompt to exit; the context and task ids are printed so you can resume with
 `send` or `chat`.
 
@@ -234,8 +235,8 @@ a2a chat -a <url> --context-id <context-id> --task-id <task-id>
 | `--context-id <id>` | Start the conversation in an existing context. |
 
 `chat` is interactive only. When standard input or output is not a terminal, it
-sends the positional message once, like `send`, and reads no input. Without a
-message it is a usage error.
+sends the positional message once, prints the context and task ids, and reads no
+input. Without a message it is a usage error.
 
 ### `task get` - Get Task Details
 
