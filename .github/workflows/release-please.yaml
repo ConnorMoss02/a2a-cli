@@ -46,3 +46,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           A2A_BOT_PAT: ${{ secrets.A2A_BOT_PAT }}
+
+  agent-plugin:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    uses: ./.github/workflows/agent-plugin.yaml
+    with:
+      tag: ${{ needs.release-please.outputs.tag_name }}
+    secrets:
+      A2A_BOT_PAT: ${{ secrets.A2A_BOT_PAT }}

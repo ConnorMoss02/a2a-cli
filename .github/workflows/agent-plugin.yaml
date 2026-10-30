@@ -1,0 +1,95 @@
+# Publishes the a2a-cli Agent Plugin to a2aproject/agent-plugins.
+#
+# a2a-cli is the source of truth for the plugin: this workflow assembles it from
+# agent-plugin/ and skills/ at a release tag and opens a pull request against
+# the marketplace repository. It runs from release-please on every release and
+# can be re-run manually for a tag that contains agent-plugin/build.sh.
+name: agent-plugin
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+    secrets:
+      A2A_BOT_PAT:
+        required: true
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "a2a-cli release tag to publish, e.g. v0.4.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag }}
+      PLUGIN: a2a-cli
+    steps:
+      - name: Validate tag
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "::error::tag must look like vX.Y.Z, got '$TAG'"
+            exit 1
+          fi
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.tag }}
+          path: a2a-cli
+          persist-credentials: false
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: a2aproject/agent-plugins
+          ref: main
+          path: agent-plugins
+          token: ${{ secrets.A2A_BOT_PAT }}
+
+      - name: Assemble plugin
+        run: a2a-cli/agent-plugin/build.sh "agent-plugins/plugins/$PLUGIN" "${TAG#v}"
+
+      - name: Update marketplace entry
+        working-directory: agent-plugins
+        run: |
+          marketplace=.claude-plugin/marketplace.json
+          jq --slurpfile p "plugins/$PLUGIN/plugin.json" --arg src "./plugins/$PLUGIN" '
+            ($p[0] | {name, description, version, author, homepage, repository, license, keywords}) as $m
+            | if any(.plugins[]; .name == $m.name)
+              then .plugins |= map(if .name == $m.name then . + $m else . end)
+              else .plugins += [$m + {source: $src}]
+              end
+          ' "$marketplace" > "$marketplace.tmp"
+          mv "$marketplace.tmp" "$marketplace"
+
+      - name: Open pull request
+        working-directory: agent-plugins
+        env:
+          GH_TOKEN: ${{ secrets.A2A_BOT_PAT }}
+        run: |
+          if [[ -z "$(git status --porcelain)" ]]; then
+            echo "agent-plugins already matches $PLUGIN $TAG"
+            exit 0
+          fi
+
+          branch="$PLUGIN/$TAG"
+          git config user.name "Agent2Agent (A2A) Bot"
+          git config user.email "a2a-bot@google.com"
+          git switch -c "$branch"
+          git add -A
+          git commit -m "chore: update $PLUGIN plugin to $TAG"
+          git push --force origin "$branch"
+
+          if [[ "$(gh pr list --head "$branch" --state open --json number --jq length)" != "0" ]]; then
+            echo "pull request for $branch already open"
+            exit 0
+          fi
+          gh pr create --base main --head "$branch" \
+            --title "chore: update $PLUGIN plugin to $TAG" \
+            --body "Generated from [a2aproject/a2a-cli@$TAG](https://github.com/a2aproject/a2a-cli/releases/tag/$TAG) by the \`agent-plugin\` workflow. Edit the plugin in a2a-cli, not here."

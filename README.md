@@ -102,10 +102,11 @@ The skill drives the `a2a` binary, so [install the CLI](#installation) first. Th
 
 ### Agent Plugin
 
-Prefer a plugin-aware client? The **[Agent Plugin](./agent-plugin/)** bundles the same skill as one installable unit ([Agent Plugins](https://agent-plugins.org/) 1.0.0, skills-only). Install it with [`skills`](https://www.skills.sh):
+Prefer a plugin-aware client? The same skill ships as an [Agent Plugin](https://agent-plugins.org/) in the **[a2aproject/agent-plugins](https://github.com/a2aproject/agent-plugins)** marketplace, published from [`agent-plugin/`](./agent-plugin/) on every release. In Claude Code:
 
 ```bash
-npx skills add https://github.com/a2aproject/a2a-cli/tree/main/agent-plugin/skills/a2a-cli -g
+/plugin marketplace add a2aproject/agent-plugins
+/plugin install a2a-cli@a2a-plugins
 ```
 
 Like the skill, it drives the `a2a` binary — [install the CLI](#installation) first.

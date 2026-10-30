@@ -1,40 +1,54 @@
-# a2a-cli — Agent Plugin
+# a2a-cli
 
-An [Agent Plugin](https://agent-plugins.org/) that teaches a plugin-aware AI agent how to drive the [`a2a` CLI](https://github.com/a2aproject/a2a-cli) — discovering, messaging, and managing A2A (Agent2Agent) agents from the command line.
+An [Agent Plugin](https://agent-plugins.org/) that teaches an AI agent to drive the [`a2a` CLI](https://github.com/a2aproject/a2a-cli): fetch an agent's card, send it a message, stream or poll a task, and list, resume, or cancel tasks on any A2A (Agent2Agent) agent.
 
-It packages the a2a-cli Agent Skill as one installable unit for a plugin-aware client. The skill and the binary can always be installed independently — the plugin is a convenience, never a precondition.
+> [!NOTE]
+> This plugin is generated from [a2aproject/a2a-cli](https://github.com/a2aproject/a2a-cli/tree/main/agent-plugin) on every a2a-cli release. Send changes there.
+
+## Requires the `a2a` binary
+
+The plugin carries the agent-facing skill only. Install `a2a` separately:
+
+- **Homebrew (macOS / Linux):** `brew tap a2aproject/a2a-cli https://github.com/a2aproject/a2a-cli && brew install a2a`
+- **WinGet (Windows):** `winget install a2aproject.a2acli`
+- **Prebuilt binary:** download from the [latest release](https://github.com/a2aproject/a2a-cli/releases/latest) and put `a2a` on your `PATH`.
+
+Check it with `a2a version`. The skill runs the same preflight check.
+
+## Install
+
+**Claude Code**
+
+```bash
+/plugin marketplace add a2aproject/agent-plugins
+/plugin install a2a-cli@a2a-plugins
+```
+
+**Any Agent Plugins client:** load the `plugins/a2a-cli` directory of [a2aproject/agent-plugins](https://github.com/a2aproject/agent-plugins).
+
+**Skill only**, with the [`skills`](https://www.skills.sh) CLI:
+
+```bash
+npx skills add https://github.com/a2aproject/agent-plugins/tree/main/plugins/a2a-cli/skills/a2a-cli -g
+```
 
 ## Contents
 
 ```text
-agent-plugin/
-├── plugin.json                 # manifest (Agent Plugins 1.0.0)
-├── LICENSE                     # Apache-2.0
+a2a-cli/
+├── plugin.json          # Agent Plugins 1.0.0 manifest
+├── LICENSE
 └── skills/
     └── a2a-cli/
-        └── SKILL.md            # agent-facing usage guidance
+        └── SKILL.md
 ```
 
-Skills-only: this plugin carries no MCP server, which is valid under Agent Plugins (a skills-only plugin conforms).
+## Usage
 
-## Requires the `a2a` binary
+Ask your agent for A2A work and it loads the skill on its own, for example:
 
-Agent Plugins packages the agent-facing pieces (skills and MCP servers), not tool binaries. The `a2a` binary is **not** bundled and must be installed separately (Homebrew, WinGet, a prebuilt release, or `go install`) — see the [project README](https://github.com/a2aproject/a2a-cli#installation) and the skill's own Setup section. The skill includes a preflight check (`a2a version`).
-
-## Install
-
-With the [`skills`](https://github.com/vercel-labs/skills) CLI, from this repository:
-
-```bash
-# from a local checkout
-npx skills add ./agent-plugin/skills/a2a-cli -g
-
-# or directly from GitHub
-npx skills add https://github.com/a2aproject/a2a-cli/tree/main/agent-plugin/skills/a2a-cli -g
-```
-
-A plugin-aware client can instead load this directory as an Agent Plugin: it reads `plugin.json`, discovers skills under `skills/`, and validates each `SKILL.md`. Installation, enablement, and updates are client-controlled.
+> Fetch the agent card at `http://localhost:8080` and send it "summarize this repo".
 
 ## Versioning
 
-The plugin `version` in `plugin.json` (`0.2.0`) tracks the `a2a` CLI release; the bundled skill keeps its own date-based `metadata.version`. The manifest targets Agent Plugins spec **1.0.0**.
+The plugin `version` matches the a2a-cli release it was built from. The bundled skill keeps its own date-based `metadata.version`.
