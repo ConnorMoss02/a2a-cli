@@ -128,6 +128,13 @@ func resolveCard(ctx context.Context, cfg *globalConfig, ref string) (*a2a.Agent
 	for k, vals := range cfg.svcParams.Params() {
 		opts = append(opts, agentcard.WithRequestHeader(k, strings.Join(vals, ", ")))
 	}
+	headers, err := cfg.cardHeaders(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	for k, vals := range headers {
+		opts = append(opts, agentcard.WithRequestHeader(k, strings.Join(vals, ", ")))
+	}
 	cfg.logf("resolving agent card from %s", ref)
 	card, err := cardResolver(cfg).Resolve(ctx, ref, opts...)
 	if err != nil {
@@ -159,6 +166,9 @@ func clientFactoryOpts(cfg *globalConfig) []a2aclient.FactoryOption {
 	// total timeout so the --timeout context deadline is what bounds a request.
 	httpClient := &http.Client{Transport: cfg.httpTransport}
 	opts := []a2aclient.FactoryOption{a2aclient.WithDefaultsDisabled()}
+	if cfg.credentials != nil {
+		opts = append(opts, cfg.credentialInterceptor())
+	}
 	if cfg.a2aVersion == "" || cfg.a2aVersion == "1.0" {
 		opts = append(
 			opts,

@@ -1141,6 +1141,11 @@ func TestInsecureCredentialWarning(t *testing.T) {
 			args:     []string{"send", "-a", url, "--insecure", "hi"},
 			wantWarn: false,
 		},
+		{
+			name:     "insecure with a credential helper warns",
+			args:     []string{"send", "-a", url, "--insecure", "--credential-helper", credentialHelper(t), "hi"},
+			wantWarn: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1298,13 +1303,18 @@ func runCMDWithConfig(t *testing.T, deps deps, args ...string) (string, error) {
 
 func runCMDCapturingStderr(t *testing.T, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
+	return runCMDCapturingStderrWithConfig(t, deps{poller: polling.Stream, cfgLoader: clicfg.LoadEmpty}, args...)
+}
+
+func runCMDCapturingStderrWithConfig(t *testing.T, deps deps, args ...string) (stdout, stderr string, err error) {
+	t.Helper()
 	var out, errBuf bytes.Buffer
 	cfg := &globalConfig{
 		Printer:   output.NewPrinter(&out, output.ModeText),
 		svcParams: &flagparse.ServiceParams{},
 		errOut:    &errBuf,
 	}
-	root := mustNewRoot(t, cfg, deps{poller: polling.Stream, cfgLoader: clicfg.LoadEmpty})
+	root := mustNewRoot(t, cfg, deps)
 	root.SetArgs(args)
 	err = root.Execute()
 	return out.String(), errBuf.String(), err

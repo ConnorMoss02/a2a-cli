@@ -30,6 +30,7 @@ import (
 	"github.com/a2aproject/a2a-cli/internal/clicfg"
 	"github.com/a2aproject/a2a-cli/internal/clierr"
 	"github.com/a2aproject/a2a-cli/internal/commandplugin"
+	"github.com/a2aproject/a2a-cli/internal/credhelper"
 	"github.com/a2aproject/a2a-cli/internal/flagparse"
 	"github.com/a2aproject/a2a-cli/internal/output"
 	"github.com/a2aproject/a2a-cli/internal/polling"
@@ -74,7 +75,11 @@ type globalConfig struct {
 	timeout      time.Duration
 	verbose      bool
 	insecureGRPC bool
+	unixSocket   string
 	configPath   string
+
+	credentialHelpers credhelper.Flag
+	credentials       *credhelper.Source
 
 	pluginsEnabled bool
 
@@ -167,6 +172,16 @@ func newRootCmd(cfg *globalConfig, deps deps) (*cobra.Command, error) {
 			}
 			cfg.bindings = bindings
 			cfg.store = store
+			for _, b := range bindings {
+				if b.Ignored == "" {
+					continue
+				}
+				if _, err := fmt.Fprintf(cfg.stderr(), "warning: ignoring %s from %s; pass --config %s to use it\n", b.Name, b.Ignored, b.Ignored); err != nil {
+					return err
+				}
+			}
+			cfg.initHTTPTransport()
+			cfg.initCredentials()
 
 			switch output.Mode(cfg.output) {
 			case output.ModeText, output.ModeJson, output.ModeJSONL:
@@ -190,7 +205,14 @@ func newRootCmd(cfg *globalConfig, deps deps) (*cobra.Command, error) {
 	pf.DurationVar(&cfg.timeout, "timeout", 30*time.Second, "Request timeout")
 	pf.BoolVarP(&cfg.verbose, "verbose", "v", false, "Verbose output to stderr")
 	pf.BoolVar(&cfg.insecureGRPC, "insecure", false, "Use insecure (plaintext) gRPC transport credentials")
+	pf.StringVar(&cfg.unixSocket, "unix-socket", "", "Send every HTTP request through the Unix socket at this path")
+	pf.Var(&cfg.credentialHelpers, "credential-helper", "Credential helper returning the headers for an agent: [scope=]path (repeatable; see a2a auth get --help)")
 	pf.StringVar(&cfg.configPath, "config", "", "Load configuration from an explicit file (.yaml, .json, or .env) in place of the local .env")
+	for _, name := range []string{"unix-socket", "credential-helper"} {
+		if err := pf.SetAnnotation(name, clicfg.AnnotationNotFromDiscoveredFile, []string{"true"}); err != nil {
+			return nil, err
+		}
+	}
 
 	cmd.AddCommand(
 		newCardCmd(cfg),
@@ -198,6 +220,7 @@ func newRootCmd(cfg *globalConfig, deps deps) (*cobra.Command, error) {
 		newChatCmd(cfg, deps),
 		newTaskCmd(cfg),
 		newConfigCmd(cfg),
+		newAuthCmd(cfg),
 		newServeCmd(cfg),
 		newTransportCmd(cfg),
 		newPluginCmd(cfg),

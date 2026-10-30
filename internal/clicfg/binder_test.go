@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/a2aproject/a2a-cli/internal/clierr"
+	"github.com/a2aproject/a2a-cli/internal/credhelper"
 	"github.com/google/go-cmp/cmp"
 	"github.com/spf13/pflag"
 )
@@ -78,6 +79,8 @@ func TestApplyConfig(t *testing.T) {
 		vals["agent-card"] = fs.String("agent-card", "", "")
 		vals["tenant"] = fs.String("tenant", "", "")
 		fs.StringArray("transport", nil, "")
+		fs.Var(&credhelper.Flag{}, "credential-helper", "")
+		fs.Lookup("credential-helper").Annotations = map[string][]string{AnnotationNotFromDiscoveredFile: {"true"}}
 		fs.Bool("insecure", false, "")
 		fs.Bool("stream", false, "")
 		fs.String("config", "", "")
@@ -144,6 +147,89 @@ func TestApplyConfig(t *testing.T) {
 		}
 		if diff := cmp.Diff([]string{"rest", "jsonrpc"}, got); diff != "" {
 			t.Fatalf("transport wrong result (-want +got) diff = %s", diff)
+		}
+	})
+
+	t.Run("keeps a credential helper with commas as one entry", func(t *testing.T) {
+		t.Parallel()
+		fs, _ := newFlags()
+		s := store(t, map[string]string{"A2ACLI_CREDENTIAL_HELPER": "/opt/helper,v2"})
+
+		if _, err := Bind(fs, s); err != nil {
+			t.Fatalf("applyConfig() error = %v", err)
+		}
+		got := fs.Lookup("credential-helper").Value.(pflag.SliceValue).GetSlice()
+		if diff := cmp.Diff([]string{"/opt/helper,v2"}, got); diff != "" {
+			t.Fatalf("credential-helper wrong result (-want +got) diff = %s", diff)
+		}
+	})
+
+	t.Run("ignores a protected flag from a discovered .env", func(t *testing.T) {
+		t.Parallel()
+		tests := []struct {
+			name string
+			user string
+			want []string
+		}{
+			{name: "unset", want: []string{}},
+			{name: "falls back to the user config", user: "credential-helper:\n  - command: [user-helper, --flag]\n", want: []string{"user-helper --flag"}},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				fs, _ := newFlags()
+				dir := t.TempDir()
+				envPath := filepath.Join(dir, ".env")
+				writeDotenv(t, envPath, map[string]string{"A2ACLI_CREDENTIAL_HELPER": "helper"})
+				userPath := filepath.Join(dir, "config.yaml")
+				if tc.user != "" {
+					if err := os.WriteFile(userPath, []byte(tc.user), 0o600); err != nil {
+						t.Fatalf("os.WriteFile(%q) error = %v", userPath, err)
+					}
+				}
+				s, err := Load(LoadOpts{WorkingDir: dir, GlobalPath: filepath.Join(dir, "none.env"), UserPath: userPath, LookupEnv: makeEnv(nil)})
+				if err != nil {
+					t.Fatalf("config.Load() error = %v", err)
+				}
+
+				bindings, err := Bind(fs, s)
+				if err != nil {
+					t.Fatalf("Bind() error = %v", err)
+				}
+				got := fs.Lookup("credential-helper").Value.(pflag.SliceValue).GetSlice()
+				if diff := cmp.Diff(tc.want, got); diff != "" {
+					t.Fatalf("credential-helper wrong result (-want +got) diff = %s", diff)
+				}
+				var ignored string
+				for _, b := range bindings {
+					if b.Name == "credential-helper" {
+						ignored = b.Ignored
+					}
+				}
+				if ignored != envPath {
+					t.Fatalf("Bind() credential-helper Ignored = %q, want %q", ignored, envPath)
+				}
+			})
+		}
+	})
+
+	t.Run("reads a protected flag from an explicit --config", func(t *testing.T) {
+		t.Parallel()
+		fs, _ := newFlags()
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, ".env")
+		writeDotenv(t, cfgPath, map[string]string{"A2ACLI_CREDENTIAL_HELPER": "helper"})
+		s, err := Load(LoadOpts{ConfigPath: cfgPath, WorkingDir: dir, GlobalPath: filepath.Join(dir, "none.env"), LookupEnv: makeEnv(nil)})
+		if err != nil {
+			t.Fatalf("config.Load() error = %v", err)
+		}
+
+		if _, err := Bind(fs, s); err != nil {
+			t.Fatalf("Bind() error = %v", err)
+		}
+		got := fs.Lookup("credential-helper").Value.(pflag.SliceValue).GetSlice()
+		if diff := cmp.Diff([]string{"helper"}, got); diff != "" {
+			t.Fatalf("credential-helper wrong result (-want +got) diff = %s", diff)
 		}
 	})
 
@@ -580,10 +666,11 @@ tenant: yaml-tenant
 			got[r.Name] = r.Source
 		}
 		want := map[string]string{
-			"agent-card": "env",
-			"tenant":     "flag",
-			"transport":  "default",
-			"insecure":   "default",
+			"agent-card":        "env",
+			"tenant":            "flag",
+			"transport":         "default",
+			"credential-helper": "default",
+			"insecure":          "default",
 		}
 		if diff := cmp.Diff(want, got); diff != "" {
 			t.Fatalf("resolution sources wrong result (-want +got) diff = %s", diff)

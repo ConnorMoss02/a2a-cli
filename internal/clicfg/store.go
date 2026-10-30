@@ -40,6 +40,9 @@ type Source struct {
 	Kind SourceKind
 	// Path is set for file-backed sources.
 	Path string
+	// Discovered is set when the file is a .env found by walking up from the
+	// working directory rather than one named by --config.
+	Discovered bool
 }
 
 // String implements Stringer.
@@ -85,14 +88,24 @@ func (s *Store) lookupValue(key string) (any, Source, bool) {
 // LookupFlag returns the configuration value for a flag, checking environment variables
 // by envVar and config files by flag name or envVar.
 func (s *Store) LookupFlag(name, envVar string) (any, Source, bool) {
+	return s.lookupFlag(name, envVar, false)
+}
+
+// LookupFlagSkipDiscovered is [Store.LookupFlag] without a .env found by
+// walking up from the working directory.
+func (s *Store) LookupFlagSkipDiscovered(name, envVar string) (any, Source, bool) {
+	return s.lookupFlag(name, envVar, true)
+}
+
+func (s *Store) lookupFlag(name, envVar string, skipDiscovered bool) (any, Source, bool) {
 	if envVar != "" {
 		if v, ok := s.lookupEnv(envVar); ok {
 			return v, Source{Kind: SourceEnv}, true
 		}
 	}
-	if s.local != nil {
+	if s.local != nil && !(skipDiscovered && s.local.discovered) {
 		if v, ok := s.local.lookup(name, envVar); ok {
-			return v, Source{Kind: SourceLocalFile, Path: s.local.path}, true
+			return v, Source{Kind: SourceLocalFile, Path: s.local.path, Discovered: s.local.discovered}, true
 		}
 	}
 	if s.user != nil {
@@ -109,8 +122,9 @@ func (s *Store) LookupFlag(name, envVar string) (any, Source, bool) {
 }
 
 type loadedFile struct {
-	path   string
-	values map[string]any
+	path       string
+	values     map[string]any
+	discovered bool
 }
 
 func (f *loadedFile) lookup(name, envVar string) (any, bool) {

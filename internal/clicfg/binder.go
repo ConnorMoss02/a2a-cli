@@ -26,6 +26,11 @@ import (
 
 const envPrefix = "A2ACLI_"
 
+// AnnotationNotFromDiscoveredFile is a flag annotation that makes [Bind]
+// ignore a value from a .env found by walking up from the working directory,
+// for flags that a cloned repository must not be able to set.
+const AnnotationNotFromDiscoveredFile = "a2a-cli/not-from-discovered-file"
+
 // FlagBinding records how a single flag was resolved.
 type FlagBinding struct {
 	Name      string
@@ -34,6 +39,9 @@ type FlagBinding struct {
 	Source    string
 	Path      string
 	Sensitive bool
+	// Ignored is the path of a discovered .env whose value for the flag was
+	// ignored because of [AnnotationNotFromDiscoveredFile].
+	Ignored string
 }
 
 // Bind fills every eligible flag that was not set on the command line from
@@ -68,6 +76,10 @@ func Bind(flags *pflag.FlagSet, store *Store) ([]FlagBinding, error) {
 		}
 
 		value, source, ok := store.LookupFlag(binding.Name, binding.EnvVar)
+		if ok && source.Discovered && hasAnnotation(f, AnnotationNotFromDiscoveredFile) {
+			binding.Ignored = source.Path
+			value, source, ok = store.LookupFlagSkipDiscovered(binding.Name, binding.EnvVar)
+		}
 		if !ok {
 			binding.Source = "default"
 			binding.Value = flagValueString(f)
@@ -95,6 +107,9 @@ func Bind(flags *pflag.FlagSet, store *Store) ([]FlagBinding, error) {
 			value = redactServiceParams(value)
 		}
 		binding.Value = formatValue(value)
+		if _, ok := f.Value.(ConfigValue); ok {
+			binding.Value = flagValueString(f)
+		}
 		bindings = append(bindings, binding)
 	})
 
@@ -141,7 +156,18 @@ func flagValueString(f *pflag.Flag) string {
 	return f.Value.String()
 }
 
+// ConfigValue is a flag value that reads configuration values itself, such
+// as lists of objects that have no string form.
+type ConfigValue interface {
+	// SetConfig sets the value from a raw config value: a string from an
+	// environment variable or .env, or a decoded YAML or JSON value.
+	SetConfig(raw any) error
+}
+
 func setFlagValue(f *pflag.Flag, raw any) error {
+	if cv, ok := f.Value.(ConfigValue); ok {
+		return cv.SetConfig(raw)
+	}
 	if slice, ok := toStringSlice(raw); ok {
 		if sv, ok := f.Value.(pflag.SliceValue); ok {
 			return sv.Replace(slice)
@@ -169,6 +195,11 @@ func setFlagValue(f *pflag.Flag, raw any) error {
 	default:
 		return f.Value.Set(fmt.Sprint(v))
 	}
+}
+
+func hasAnnotation(f *pflag.Flag, key string) bool {
+	_, ok := f.Annotations[key]
+	return ok
 }
 
 func flagToEnvVar(name string) string {
